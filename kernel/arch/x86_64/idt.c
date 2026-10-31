@@ -1,5 +1,6 @@
 #include <kernel/arch.h>
 #include <kernel/kernel.h>
+#include <kernel/proc.h>
 
 struct __attribute__((packed)) idt_entry {
     uint16_t off_lo, sel;
@@ -22,12 +23,15 @@ static const char *const exc_names[32] = {
     "Security", "Reserved",
 };
 
+const char *exc_name(unsigned vec) { return vec < 32 ? exc_names[vec] : "IRQ"; }
+
 void idt_init(void)
 {
     for (int i = 0; i < 48; i++) {
         uint64_t h = isr_stub_table[i];
         idt[i] = (struct idt_entry){h & 0xFFFF, 0x08, 0, 0x8E, (h >> 16) & 0xFFFF, h >> 32, 0};
     }
+    idt[8].ist = 1;                    /* #DF на отдельном стеке (TSS.IST1): переполнение стека ядра не станет triple fault */
     struct dtr d = {sizeof idt - 1, (uint64_t)idt};
     __asm__ volatile("lidt %0" ::"m"(d));
 }
@@ -36,10 +40,14 @@ void isr_dispatch(struct regs *r)
 {
     if (r->vector >= 32) {
         irq_dispatch(r->vector - 32);
+        if (r->vector == 32) sched_preempt(r);   /* строго ПОСЛЕ EOI, иначе IRQ0 останется «в обслуживании» у вытесненной задачи */
         return;
     }
     uint64_t cr2 = 0;
     __asm__ volatile("mov %%cr2,%0" : "=r"(cr2));
+    /* Исключение в кольце 3 убивает только процесс. NMI/#DF/#MC — аппаратные аварии, их не прощаем. */
+    if ((r->cs & 3) && r->vector != 2 && r->vector != 8 && r->vector != 18)
+        proc_handle_user_fault(r, cr2);          /* вернётся, только если текущая задача не пользовательский процесс */
     kprintf("\n*** CPU exception %lu: %s (err=%#lx) ***\n", r->vector, exc_names[r->vector], r->error);
     kprintf("RIP=%016lx CS=%lx RFLAGS=%lx RSP=%016lx\n", r->rip, r->cs, r->rflags, r->rsp);
     kprintf("RAX=%016lx RBX=%016lx RCX=%016lx RDX=%016lx\n", r->rax, r->rbx, r->rcx, r->rdx);

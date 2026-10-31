@@ -32,6 +32,10 @@ KERNEL_CFLAGS  := $(KFLAGS) -I include -I kernel/include
 # драйверы видят ТОЛЬКО include/miga/: это граница между ядром и драйверами
 DRIVER_CFLAGS  := $(KFLAGS) -I include
 
+ifdef PROCTEST
+KERNEL_CFLAGS += -DPROCTEST=$(PROCTEST)
+endif
+
 KERNEL_SRC_C := $(shell find kernel -name '*.c')
 KERNEL_SRC_S := $(shell find kernel -name '*.S')
 KERNEL_OBJS  := $(patsubst %.c,$(BUILD)/%.o,$(KERNEL_SRC_C)) $(patsubst %.S,$(BUILD)/%.o,$(KERNEL_SRC_S))
@@ -43,7 +47,7 @@ DRIVER_LIB   := $(BUILD)/drivers/libdrivers.a
 KERNEL_ELF := $(BUILD)/kernel.elf
 
 # ---------------------------------------------------------------- цели
-.PHONY: all boot kernel image run disk clean check
+.PHONY: all boot kernel image run disk clean check proctest
 all: image
 
 boot: $(BOOT_EFI)
@@ -112,6 +116,16 @@ run: image
 	@test -n "$(OVMF)" || (echo "OVMF не найден: поставьте пакет ovmf или задайте OVMF=/path/OVMF.fd"; exit 1)
 	qemu-system-x86_64 -machine q35 -m 256M $(QEMU_FW) \
 	    -drive format=raw,file=fat:rw:$(ESP) -serial stdio -no-reboot
+
+# Самотест процессов/планировщика C3: make proctest N=1..5; журнал исключений QEMU: build/qemu-int.log
+proctest:
+	@test -n "$(N)" || (echo "usage: make proctest N=1..5"; exit 1)
+	@rm -f $(BUILD)/kernel/core/main.o $(BUILD)/kernel/core/proc.o
+	@$(MAKE) --no-print-directory PROCTEST=$(N) image
+	@test -n "$(OVMF)" || (echo "OVMF not found"; exit 1)
+	timeout 60 qemu-system-x86_64 -machine q35 -m 256M $(QEMU_FW) -drive format=raw,file=fat:rw:$(ESP) \
+	    -serial stdio -display none -no-reboot -d int,cpu_reset -D $(BUILD)/qemu-int.log || true
+	@rm -f $(BUILD)/kernel/core/main.o $(BUILD)/kernel/core/proc.o
 
 check: all
 	@echo "--- kernel segments"; readelf -lW $(KERNEL_ELF) | sed -n '/Program Headers/,/Section to Segment/p'

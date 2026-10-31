@@ -5,6 +5,7 @@
 #include <kernel/acpi.h>
 #include <kernel/gui.h>
 #include <kernel/vfs.h>
+#include <kernel/proc.h>
 
 void kmain(struct boot_info *bi)
 {
@@ -38,6 +39,11 @@ void kmain(struct boot_info *bi)
     drivers_init(bi, DRV_NORMAL);         /* pit, ps2kbd, xhci: нужны IRQ/PMM/MMIO */
     drivers_init(bi, DRV_LATE);           /* usbhid: поверх xhci */
     vfs_init();                           /* таблица точек монтирования: /, /boot, /mnt/diskN (файловых систем нет) */
+
+    proc_init();                          /* kmain = задача 0; TSS уже загружен в gdt_init */
+#ifdef PROCTEST
+    proc_selftest(PROCTEST);              /* make proctest N=1..5; сам выключает QEMU */
+#endif
 
     gui_init(bi);                         /* GUI-сервер: запоминает фреймбуфер, окно откроет команда `gui` */
 

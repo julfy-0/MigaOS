@@ -136,6 +136,27 @@ void sched_yield(void)
     cpu_irq_restore(fl);
 }
 
+void sched_block(void)
+{
+    uint64_t fl = cpu_irq_save();
+    current->state = PROC_BLOCKED;
+    schedule();                          /* вернулись: нас разбудили (или больше некого запускать) */
+    while (current->state == PROC_BLOCKED) {
+        cpu_irq_restore(fl | (1ull << 9));   /* IF=1: дать прийти прерыванию, которое разбудит */
+        __asm__ volatile("hlt");
+        cpu_irq_save();
+        schedule();
+    }
+    cpu_irq_restore(fl);
+}
+
+void sched_wake(struct proc *p)
+{
+    uint64_t fl = cpu_irq_save();
+    if (p && p->state == PROC_BLOCKED) p->state = PROC_RUNNABLE;
+    cpu_irq_restore(fl);
+}
+
 void sched_preempt(const struct regs *r)
 {
     struct proc *c = current;

@@ -15,12 +15,23 @@
 #define USER_CODE_VA    USER_BASE
 #define USER_STACK_TOP  (USER_BASE + 0x8000)
 
-enum proc_state { PROC_UNUSED = 0, PROC_NEW, PROC_RUNNABLE, PROC_RUNNING, PROC_ZOMBIE };
+enum proc_state { PROC_UNUSED = 0, PROC_NEW, PROC_RUNNABLE, PROC_RUNNING, PROC_ZOMBIE, PROC_BLOCKED };
 
 #define PF_USER     1u   /* процесс кольца 3 со своим CR3 */
 #define PF_KPREEMPT 2u   /* поток ядра можно вытеснять по тику в любой точке (он не трогает kprintf/pmm без preempt_disable) */
 
+#define PROC_SHM_MAPS 8              /* сколько shm-сегментов процесс может держать отображёнными */
+
+struct proc_shm_map {
+    uint32_t shm;                 /* id сегмента; 0 = слот свободен */
+    uint32_t pages;               /* длина в страницах */
+    uint64_t va;                  /* адрес в пространстве процесса */
+};
+
 struct proc {
+    uint32_t caps;
+    uint64_t mmio_brk;            /* следующий свободный VA в окне USER_MMIO (0 = с начала) */
+    struct proc_shm_map shm_map[PROC_SHM_MAPS];
     int pid;
     char name[16];
     enum proc_state state;
@@ -49,6 +60,8 @@ void proc_release(struct proc *p);                        /* освободит�
 void sched_ready(struct proc *p);                         /* NEW -> RUNNABLE */
 struct proc *kthread_create(const char *name, void (*fn)(void *), void *arg, uint32_t flags);
 void sched_yield(void);
+void sched_block(void);                                   /* заснуть до sched_wake(); условие перепроверять после возврата */
+void sched_wake(struct proc *p);                          /* BLOCKED -> RUNNABLE, остальные состояния не трогает */
 void sched_preempt(const struct regs *r);                 /* из isr_dispatch после EOI тика PIT */
 void sched_exit(int code) __attribute__((noreturn));
 void sched_post_switch(void);                             /* вызывается из asm-трамплинов и после ctx_switch */

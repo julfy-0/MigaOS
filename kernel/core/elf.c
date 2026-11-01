@@ -1,9 +1,16 @@
 #include <kernel/elf.h>
 
-/* ---- адаптер к памяти ядра (C2/C3): подставить реальные имена ------------ */
-extern uint64_t pmm_alloc_page(void);                 /* физ. адрес, 0 = нет памяти */
-extern void    *phys_to_virt(uint64_t pa);            /* доступ ядра к кадру */
-extern int      vmm_map_user(struct aspace *as, uint64_t va, uint64_t pa, unsigned flags);
+#include <kernel/kernel.h>
+#include <kernel/mm.h>
+
+/* ---- адаптер к памяти ядра (C2): struct aspace * здесь — это CR3 (vm_space_create()), приведённый к указателю ---- */
+static inline uint64_t pmm_alloc_page(void) { return pmm_alloc(); }
+static inline void *phys_to_virt(uint64_t pa) { return P2V(pa); }
+static inline int vmm_map_user(struct aspace *as, uint64_t va, uint64_t pa, unsigned flags)
+{
+    unsigned vf = VM_USER | ((flags & ELF_MAP_W) ? VM_WRITE : 0) | ((flags & ELF_MAP_X) ? 0 : VM_NOEXEC);
+    return vm_map((uint64_t)(uintptr_t)as, va, pa, vf);
+}
 /* -------------------------------------------------------------------------- */
 
 #define PAGE      4096ULL

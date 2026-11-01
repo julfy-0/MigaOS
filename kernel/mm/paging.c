@@ -7,6 +7,7 @@
  *  - всё остальное (MMIO): uncached */
 #include <kernel/kernel.h>
 #include <kernel/arch.h>
+#include <kernel/mm.h>
 #include <miga/mem.h>
 #include <miga/string.h>
 
@@ -52,9 +53,31 @@ static void pat_setup_wc(void)
     __asm__ volatile("wbinvd; wrmsr" ::"a"(lo), "d"(hi), "c"(0x277) : "memory");
 }
 
+/* NX: без EFER.NXE бит 63 в записях таблиц зарезервирован (#PF), поэтому включаем его до первой записи с VM_NOEXEC.
+ * Таблицы identity map его не используют, так что сами по себе они не меняются. */
+static int nx_on;
+
+static void nx_setup(void)
+{
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000000u));
+    if (a < 0x80000001u) return;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000001u));
+    if (!(d & (1u << 20))) return;                                  /* NX не поддерживается */
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000080u));
+    lo |= 1u << 11;                                                 /* EFER.NXE */
+    __asm__ volatile("wrmsr" ::"a"(lo), "d"(hi), "c"(0xC0000080u) : "memory");
+    nx_on = 1;
+}
+
+int vm_nx_enabled(void) { return nx_on; }
+uint64_t vm_kernel_cr3(void) { return (uint64_t)pml4; }
+
 void paging_init(const struct boot_info *bi)
 {
     pat_setup_wc();
+    nx_setup();
     uint64_t top = 4 * GIB; /* первые 4 ГиБ мапим всегда: там APIC/PCI-окна */
     for (uint64_t i = 0; i < bi->mem_count; i++) {
         if (bi->mem[i].type == MEM_MMIO || bi->mem[i].type == MEM_BAD) continue;
@@ -82,7 +105,7 @@ void paging_init(const struct boot_info *bi)
 void *mmio_map(uint64_t phys, size_t size)
 {
     uint64_t end = phys + (size ? size : 1);
-    if (end > (1ULL << 47) || end < phys) return 0;
+    if (end > VM_USER_BASE || end < phys) return 0;          /* окно выше 64 ТиБ принадлежит пользователю (PML4[128..]) */
     for (uint64_t g = phys / GIB; g <= (end - 1) / GIB; g++) {
         uint64_t *pdp;
         if (g < 512) pdp = pdpt;
@@ -92,7 +115,7 @@ void *mmio_map(uint64_t phys, size_t size)
                 uint64_t *n = (uint64_t *)pmm_alloc();
                 if (!n) return 0;
                 memset(n, 0, PAGE_SIZE);
-                pml4[pe] = (uint64_t)n | P_PRESENT | P_RW;
+                vm_kernel_pml4e_set((unsigned)pe, (uint64_t)n | P_PRESENT | P_RW); /* во все пространства, не только в главное */
             }
             pdp = (uint64_t *)(pml4[pe] & ~0xFFFULL);
         }
@@ -104,6 +127,6 @@ void *mmio_map(uint64_t phys, size_t size)
             t[i] = (g * GIB + i * HUGE) | P_PRESENT | P_RW | P_HUGE | P_PCD | P_PWT;
         pdp[g & 511] = (uint64_t)t | P_PRESENT | P_RW;
     }
-    __asm__ volatile("mov %0, %%cr3" ::"r"((uint64_t)pml4) : "memory"); /* сброс TLB */
+    cpu_write_cr3(cpu_read_cr3());                                       /* сброс TLB текущего пространства (не переключаем CR3!) */
     return (void *)phys;
 }
